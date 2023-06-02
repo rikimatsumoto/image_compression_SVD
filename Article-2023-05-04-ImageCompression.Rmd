@@ -44,7 +44,7 @@ library(patchwork); # package for arranging multiple plots
 library(png)
 
 # Set working directory
-file_path <- "/Users/rikimatsumoto/Documents/RStudio/Articles/Article-2023-05-04-ImageCompression"
+file_path <- ""
 setwd(file_path)
 ```
 
