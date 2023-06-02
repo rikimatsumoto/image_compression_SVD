@@ -1,0 +1,403 @@
+---
+title: "SVD-based "
+subtitle: "Riki Matsumoto"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+date: "2023"
+---
+
+```{r}
+#   |\      _,,,---,,_             
+#   /,`.-'`'    -.  ;-;;,_         riki
+#  |,4-  ) )-,_. ,\ (  `'-' 
+# '---''(_/--'  `-'\_)
+```
+```{r setup, include = TRUE}
+################################################################################
+# Load packages & dataset #
+################################################################################
+# Load packages
+library(ggthemes); library(tidyverse); library(tidytext)
+
+# Set up the default parameters
+# 1. The code block will be shown in the document
+# 2. set up figure display size
+# 3. turn off all the warnings and messages
+
+# Set default chunk options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 5, # Figure sizes
+                      error=FALSE) # = false to hide code
+ 
+# Color palettes
+IMFblue <- "#3370AC"; IMFred <- "#DA291C"; IMFyellow <- "#e6b752"
+palette_4 <- c("#2d6074","#e6b752","#188c81","#d5624b")
+palette_5 <- c(IMFblue, "#2d6074","#e6b752","#188c81","#d5624b")
+palette_imf <- c(IMFblue, IMFred, IMFyellow)
+
+# Load additional packages
+library(patchwork); # package for arranging multiple plots
+library(png)
+
+# Set working directory
+file_path <- "/Users/rikimatsumoto/Documents/RStudio/Articles/Article-2023-05-04-ImageCompression"
+setwd(file_path)
+```
+
+```{r}
+# IMF fonts
+imf_theme <- function() {
+  theme(text = ggplot2::element_text(face = "plain", family = "Segoe UI"),
+        axis.text = ggplot2::element_text(size = 9.5),
+        axis.title = ggplot2::element_text(size = 10.25),
+        panel.grid.major.y = ggplot2::element_blank(),
+        panel.border = ggplot2::element_rect(colour = "#b3b3b3",fill=NA,size = 0.5),
+        axis.ticks.x = ggplot2::element_line(colour = "#b3b3b3",size = 0.5),
+        axis.ticks.y = ggplot2::element_line(colour = "#b3b3b3",size = 0.5),
+        axis.ticks.length=unit(-0.25, "cm"),
+        axis.text.y = ggplot2::element_text(margin = unit(c(0,0.1,0,0), "cm")),
+        axis.line.x = ggplot2::element_blank(),
+        plot.caption = element_text(size = 9.5),
+        plot.title = element_text(size = 12)
+        )
+}
+```
+
+
+### Summary
+
+Disclaimer: This is a working draft, i.e., research in progress and is such, published to elicit comments/advice/recommendations and to encourage debate. The analysis is based on coursework from Georgia Tech's CSE 6040 Intro to Computing for Data Analysis class.
+
+In this short blog post, I compress an image using singular vector decomposition (SVD) to approximate a matrix of pixels, implemented mainly in R tidyverse. Specifically, I take an image (.png), represent the image as a matrix of grayscale pixels, then approximate the matrix with it's k-truncated SVD. Finally, I return the compressed version of the same image, and make some comparisons.
+
+# Introduction
+
+Singular value decomposition (SVD) is a powerful mathematical tool used to decompose rectangular matrices that may have different numbers of rows and columns. This technique allows us to break down the matrix into a set of orthonormal basis vectors ranked by their significance. 
+
+Orthonormal basis vectors are a set of vectors that are mutually perpendicular (orthogonal) to each other and have a length of 1 (normalized): 1) The orthogonality of the basis vectors means that they are linearly independent and span the entire space; 2) the normalization ensures that the projection of any vector onto a basis vector is equal to the scalar product of the vector and the basis vector. Orthonormal basis vectors are useful in many applications, including machine learning, and image compression.
+
+Image compression is the process of shrinking the size of a digital image file (ideally) without making it look too blurry or distorted. There are two types of compression: lossless and lossy. Lossless compression, like a fancy PNG or GIF, uses  mathematical algorithms to shrink your image without throwing away any information. Then there's lossy compression, like JPEG. It's like playing a game of Jenga where you're taking out blocks of information that you don't 100% need to make the image smaller. But if you take out too many blocks, the image quality can suffer. One popular way of doing this is the Discrete Cosine Transform (DCT), which is like breaking your image up into little pieces and analyzing each one to see which pieces you can throw away. However, there are many other implementations of image compression.
+
+Now this blog is really about applying Singular Vector Decomposition (SVD) so I'm going to use that here to compress an image.
+
+
+# Preparing the data
+
+For this blog, I'm using a picture of me enjoying dinner.
+
+[picture]
+
+The first step in the analysis is to prep the image for SVD. This includes importing the image into R, converting it to a matrix of grayscale pixels, then preparing it for further analysis. As a side note, converting the image to grayscale isn't necessary for image compression, however, having only one color channel (a opposed to three, RGB) makes the process substantially simpler.
+
+To import the image into R, I use the package `png`. The function `readPNG()`, reads the bitmap image stored in the PNG format into R, as an array. The `native` parameter determines the image representation; if FALSE (the default) then the result is an array, if TRUE then the result is a native raster representation.
+
+```{r}
+# Read in image
+img_raw <- png::readPNG("rgb_image_riki.png", native = FALSE)
+
+class(img_raw)
+```
+
+
+The bitmap image is stored as raster graphics (consisting of "pixel matrices") and are returned as either a single matrix with gray values in [0, 1] or three matrices with the RGB values in [0, 1]. Below, is the PNG image converted into an array image_raw with dimensions 4032 x 3024 x 4. This means the image is 4032 by 3024, with four channels of red, green, blue, and alpha (for level of transparency).
+
+```{r}
+dim(img_raw)
+
+print(paste("The number of rows is",nrow(img_raw)))
+print(paste("The number of columns is",ncol(img_raw)))
+```
+
+The average method, which is simply taking the average of three colors, is the most simple method to convert RGB to grayscale. Here, I write a function that calculates the average of the three RGB colors from the raster array.
+
+```{r}
+# RGB to Grayscale R function
+rgb2gray_avg <- function(x){
+  img_gray <- (img_raw[,,1] + img_raw[,,2] + img_raw[,,3])/3
+  return(img_gray)
+}
+
+img_gray <- rgb2gray_avg(img_raw)
+```
+
+Below, I confirm that the data are now a 2D array.
+
+```{r}
+dim(img_gray)
+```
+
+To examine the size of the image, I write a function that, given `x`, an array of (grayscale) image pixels, returns the total number of pixels. Based on the function, the image is approximately 12.192768 megapixels.
+
+```{r}
+# Image size
+img_size <- function(x, megapixel = FALSE){
+  size <- nrow(x) * ncol(x)
+  
+  if(megapixel == TRUE) {
+    size <- size * 1e-6
+  }
+  return(size)
+}
+
+print(paste("The image uses approximately",img_size(img_gray, megapixel = TRUE),"megapixels."))
+
+print(object.size(img_gray), units = "auto") 
+```
+
+Next, I write a function that, given `x`, an array of (grayscale) image pixels, reshapes long to a dataframe with i and j coordinates for each pixel and the grayscale value. I reshaped the array long, so it's easier to plot using ggplot.
+
+```{r}
+# Create a data frame for plotting in ggplot2
+pngarray2df <- function(x){
+  x_df <- as.data.frame(x) %>%
+    dplyr::mutate(i = nrow(x):1)
+  colnames(x_df) <- c(ncol(x):1,"i")
+  x_df <- x_df %>%
+    pivot_longer(cols = c(1:ncol(x)), names_to = "j", values_to = "value") %>%
+    dplyr::mutate(j = as.numeric(j),
+                  i = as.numeric(i))
+}
+```
+
+
+
+```{r}
+# Call function and check dimensions
+img_gray_df <- pngarray2df(img_gray)
+dim(img_gray_df)
+glimpse(img_gray_df)
+```
+
+The `ggplot()` function is then used to create a tile plot of the image, where each tile represents a pixel and the fill color represents the grayscale value. The `scale_fill_gradient()` function sets the color scale from black to white.
+
+
+```{r, fig.width = 3, fig.height = 5}
+# Plot using ggplot2
+ggplot(img_gray_df, aes(x = j, y = i)) +
+  geom_raster(aes(fill=value)) + 
+  scale_fill_gradient(low = "black", high = "white") +
+  labs(x="j", y="i", title="Original image") +
+  theme(plot.title = element_text(size = 12),
+                plot.caption = element_text(size = 9.5),
+        legend.position="top") +
+  imf_theme()
+```
+
+
+
+
+
+# Compression via the truncated Singular Vector Decomposition (SVD)
+
+Suppose we represent the image as a matrix, $A$. Then we can also approximate $A$ with its $k$-truncated SVD, $(U_k, \Sigma_k, V_k^T)$. If you can choose $k$ so that the size of the representation, $(U_k, \Sigma_k, V_k^T)$, is less than the size of original image, then we have compressed it.
+
+Recall that the $k$-truncated SVD gives the best rank-$k$ approximation to a matrix $A$. That is, if the SVD of $A$ is $A = U \Sigma V^T$, then we can approximate $A$ by $A \approx U_k \Sigma_k V_k^T$, where $(U_k, \Sigma_k, V_k^T)$ is the $k$-truncated SVD, taken by retaining the $k$ largest singular values (entries of diagonal matrix $\Sigma$), as well as the first $k$ columns of the left and right singular vectors ($U$ and $V$).
+
+The function `svd()` returns a list, `(Sk, Uk, VkT)`, where `S` is an array of all the singular values (not just the top $k$) and `Uk` and `VkT` are the $k$-truncated singular vectors.
+
+```{r}
+# Use svd() function
+img_gray_svd <- svd(img_gray)
+```
+
+In Fig. X, we plot the entries of diagonal matrix $\Sigma$, to show that the singular values are sorted from largest ($\sigma_0$) to smallest ($\sigma_{s-1}$).
+
+```{r}
+plot(1:length(img_gray_svd$d), img_gray_svd$d)
+```
+
+Here, I write a function, `compress_matrix(svd_I, k)` that, given the SVD of an input image interepreted as a matrix, computes it's `k`-truncated SVD, and then returns a compressed representation.
+
+```{r}
+# Function
+compress_matrix <- function(svd_I, k){
+  # Extracting the SVD components
+  U <- svd_I$u
+  V <- svd_I$v
+  Sigma <- svd_I$d
+  
+  # K-truncated SVD
+  U_k <- as.matrix(U[, 1:k])
+  V_k <- as.matrix(V[, 1:k])
+  Sigma_k <- as.matrix(diag(Sigma[1:k]))
+  
+  # Create list with results
+  svd_I_k <- list(U_k,V_k,Sigma_k)
+  names(svd_I_k) <- c("U_k","V_k","Sigma_k")
+  
+  # Return output
+  return(svd_I_k)
+}
+```
+
+
+
+
+
+```{r}
+# Compress image, truncating to only retain first 50.
+img_gray_svd_k <- compress_matrix(img_gray_svd, k = 50)
+
+paste("Original image required ~",format(object.size(img_gray), units = "auto"))
+
+paste("Compressed representation retaining k=50 singular values is equivalent to",format(object.size(img_gray_svd_k), units = "auto"))
+
+paste("Thus, the compression ratio is ~",(as.numeric(object.size(img_gray)) / as.numeric(object.size(img_gray_svd_k))),"times.")
+```
+
+```{r}
+format(object.size(img_gray), units = "auto")
+format(object.size(img_gray_svd_k), units = "auto")
+```
+
+```{r}
+# Function
+uncompress_matrix <- function(U_k, V_k, Sigma_k){
+  # Reconstructs compressed matrix approximately by multiplying out the truncated SVD.
+  I_truncated <- U_k %*% Sigma_k %*% t(V_k)
+
+  # Return output
+  return(I_truncated)
+}
+
+# Call function to uncompress
+img_gray_truncated <- uncompress_matrix(img_gray_svd_k[["U_k"]], 
+                                        img_gray_svd_k[["V_k"]],
+                                        img_gray_svd_k[["Sigma_k"]])
+```
+
+
+
+```{r}
+# Call function and check dimensions
+img_gray_truncated_df <- pngarray2df(img_gray_truncated)
+dim(img_gray_truncated_df)
+glimpse(img_gray_truncated_df)
+```
+
+
+```{r, fig.width = 7.5, fig.height = 5}
+# Plot using ggplot2
+temp1 <- ggplot(img_gray_df, aes(x = j, y = i)) +
+  geom_raster(aes(fill=value), show.legend = FALSE) + 
+  scale_fill_gradient(low = "black", high = "white") +
+  labs(x="j", y="i", title="Original image") +
+  theme(plot.title = element_text(size = 12),
+                plot.caption = element_text(size = 9.5))+
+  imf_theme()
+temp2 <- ggplot(img_gray_truncated_df, aes(x = j, y = i)) +
+  geom_raster(aes(fill=value), show.legend = FALSE) + 
+  scale_fill_gradient(low = "black", high = "white") +
+  labs(x="j", y="i", title="SVD-based compressed image") +
+  theme(plot.title = element_text(size = 12),
+                plot.caption = element_text(size = 9.5)) +
+  imf_theme()
+
+# Arranging Multiple Plots using Patchwork
+((temp1|temp2) + plot_layout(guides="collect") + plot_annotation(
+  caption = 'Source: Author\'s computation',
+  theme = theme(plot.title = element_text(size = 12),
+                plot.caption = element_text(size = 9.5))))
+# ggsave("./fig01.png", height = 5, width = 10, units = "cm")
+remove(temp1, temp2)
+```
+
+
+
+
+I can measure the error of the compressed representation in the squared Frobenius norm, given by the sum of the trailing singular values,
+
+$$
+  \|A - U_k \Sigma_k V_k^T\|_F^2 = \sigma_{k}^2 + \sigma_{k+1}^2 + \cdots + \sigma_{s-1}^2,
+$$
+
+where $s = \min(m, n)$ if $A$ is $m \times n$ and we assume that the singular values are sorted from largest ($\sigma_0$) to smallest ($\sigma_{s-1}$).
+
+Here is a function that returns the relative error, measured using the Frobenius norm, i.e.,
+
+$$
+  \dfrac{\|A - U_k \Sigma_k V_k^T\|_F}
+        {\|A\|_F}
+        .
+$$
+
+The first formula above is $\|\cdot\|_F^2$, whereas the relative error I to return is in terms of $\|\cdot\|_F$ (not squared).
+
+Given the singular values of a matrix, return the relative reconstruction error.
+    
+```{r}
+compression_error <- function(Sigma, k){
+  # Singular value
+  svd_sigma <- Sigma
+  
+  # K-truncated SVD
+  svd_sigma_k <- svd_sigma[(k+1):length(svd_sigma)]
+  
+  # Given the singular values of a matrix, return the relative reconstruction error.
+  rec_error <- sqrt((sum(svd_sigma_k^2) / sum(svd_sigma^2))) * 100
+  return(rec_error)
+}
+
+
+
+print(paste("Relative reconstruction (compression) error is ~", round(compression_error(img_gray_svd$d, k = 50), 3),"percent, for k = ",50))
+```
+
+
+```{r}
+compression_error_df <- data.frame(matrix(ncol = 2, nrow = 100))
+colnames(compression_error_df) <- c("k_value","error")
+compression_error_df$k_value <- seq(1,100,1)
+
+compression_error_df <- compression_error_df %>%
+  dplyr::group_by(k_value) %>%
+  dplyr::mutate(error = compression_error(img_gray_svd$d, k = k_value))
+
+ggplot(compression_error_df, aes(x = k_value, y = error)) +
+  geom_point(color = IMFblue) + 
+  labs(x="k", y="Compression Error, percent", title="Compression Error vs Truncated k ranks") +
+  theme(plot.title = element_text(size = 12),
+                plot.caption = element_text(size = 9.5)) +
+  imf_theme()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Appendix
+
+## Resources:
+
+- https://stackoverflow.com/questions/31800687/how-to-get-a-pixel-matrix-from-grayscale-image-in-r
+- https://cran.r-project.org/web/packages/png/png.pdf
+- https://bookdown.org/ndphillips/YaRrr/using-if-then-statements-in-functions.html
+- https://rpubs.com/lgadar/matrix-visualizations
+- https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/svd
+- https://rpubs.com/aaronsc32/singular-value-decomposition-r
+- https://stats.oarc.ucla.edu/r/codefragments/svd_demos/
+- https://www.rdocumentation.org/packages/utils/versions/3.6.2/topics/object.size
+
+## Misc.
+```{r , message=FALSE, error=FALSE, warning=FALSE, include=TRUE}
+################################################################
+# Print packages used #
+################################################################
+installed.packages()[names(sessionInfo()$otherPkgs), "Version"]
+``` 
+
